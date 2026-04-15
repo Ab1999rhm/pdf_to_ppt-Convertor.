@@ -1,0 +1,6 @@
+streamlit
+PyMuPDF
+sumy
+duckduckgo-search
+python-pptx
+nltk
