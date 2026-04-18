@@ -1,6 +1,8 @@
+google-generativeai
+python-dotenv
 streamlit
 PyMuPDF
-sumy
 duckduckgo-search
 python-pptx
-nltk
+Pillow
+groq

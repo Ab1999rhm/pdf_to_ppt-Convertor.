@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slide Layout & Color Preview</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Calibri', 'Segoe UI', sans-serif;
+            background: #f5f7fa;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+        h1 { text-align: center; color: #2C3E50; margin-bottom: 20px; }
+        
+        /* Slide container - 16:9 aspect ratio */
+        .slide {
+            width: 800px;
+            height: 450px;
+            background: #ECF0F1;
+            position: relative;
+            margin: 0 auto;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            overflow: hidden;
+        }
+        
+        /* Top accent bar */
+        .top-bar {
+            height: 6px;
+            width: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .blue { background: #2980B9; }
+        .red { background: #C0392B; }
+        .green { background: #27AE60; }
+        
+        /* Slide content */
+        .slide-content {
+            padding: 40px 50px;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .slide-title {
+            font-size: 32px;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-bottom: 25px;
+            letter-spacing: 1px;
+        }
+        .title-blue { color: #2980B9; }
+        .title-red { color: #C0392B; }
+        .title-green { color: #27AE60; }
+        
+        .bullets {
+            flex: 1;
+            padding-left: 20px;
+        }
+        
+        .bullets li {
+            font-size: 18px;
+            color: #2C3E50;
+            margin-bottom: 15px;
+            line-height: 1.5;
+        }
+        
+        /* Footer */
+        .footer {
+            position: absolute;
+            bottom: 20px;
+            left: 30px;
+            right: 30px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #7F8C8D;
+        }
+        
+        /* Page number */
+        .page-num {
+            position: absolute;
+            bottom: 20px;
+            right: 30px;
+            font-size: 12px;
+            color: #7F8C8D;
+        }
+        
+        /* Title slide variation */
+        .title-slide {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 60px;
+        }
+        
+        .title-slide h2 {
+            font-size: 44px;
+            font-weight: bold;
+            color: #2980B9;
+            text-transform: uppercase;
+            margin-bottom: 30px;
+        }
+        
+        .title-slide p {
+            font-size: 18px;
+            color: #7F8C8D;
+            line-height: 1.8;
+        }
+        
+        /* Color palette reference */
+        .palette {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 20px;
+        }
+        .color-box {
+            width: 120px;
+            height: 80px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding: 8px;
+            font-size: 12px;
+            color: white;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .color-bg { background: #ECF0F1; color: #2C3E50; text-shadow: none; }
+        .color-blue { background: #2980B9; }
+        .color-red { background: #C0392B; }
+        .color-green { background: #27AE60; }
+        .color-text { background: #2C3E50; }
+        .color-gray { background: #7F8C8D; }
+        
+        .label {
+            text-align: center;
+            margin-top: 10px;
+            font-size: 14px;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <h1>📊 Slide Layout & Color Scheme Preview</h1>
+    
+    <!-- Color Palette -->
+    <div class="palette">
+        <div>
+            <div class="color-box color-bg">#ECF0F1<br>Background</div>
+            <div class="label">Background</div>
+        </div>
+        <div>
+            <div class="color-box color-blue">#2980B9<br>Blue Theme</div>
+            <div class="label">Standard</div>
+        </div>
+        <div>
+            <div class="color-box color-red">#C0392B<br>Red Theme</div>
+            <div class="label">Problem</div>
+        </div>
+        <div>
+            <div class="color-box color-green">#27AE60<br>Green Theme</div>
+            <div class="label">Impact</div>
+        </div>
+        <div>
+            <div class="color-box color-text">#2C3E50<br>Text</div>
+            <div class="label">Body Text</div>
+        </div>
+        <div>
+            <div class="color-box color-gray">#7F8C8D<br>Footer</div>
+            <div class="label">Footer</div>
+        </div>
+    </div>
+
+    <!-- Title Slide -->
+    <h2 style="text-align: center; color: #2C3E50; margin-top: 30px;">Title Slide (First Page)</h2>
+    <div class="slide">
+        <div class="slide-content title-slide">
+            <h2>Presentation Title</h2>
+            <p>Strategic Analysis Synthesis<br>Prepared by: Student Name</p>
+        </div>
+    </div>
+
+    <!-- Standard Slide (Blue) -->
+    <h2 style="text-align: center; color: #2C3E50; margin-top: 30px;">Standard Slide (Blue Theme)</h2>
+    <div class="slide">
+        <div class="top-bar blue"></div>
+        <div class="slide-content">
+            <h3 class="slide-title title-blue">Introduction Topic</h3>
+            <ul class="bullets">
+                <li>Why is this concept important for understanding?</li>
+                <li>This is the first detailed bullet point explaining a key concept.</li>
+                <li>Another insight that provides deeper understanding of the topic.</li>
+                <li>Final takeaway that summarizes the core message.</li>
+            </ul>
+        </div>
+        <div class="footer">
+            <span>Prepared by: John Doe</span>
+            <span>ID: 12345</span>
+        </div>
+        <div class="page-num">2</div>
+    </div>
+
+    <!-- Problem Slide (Red) -->
+    <h2 style="text-align: center; color: #2C3E50; margin-top: 30px;">Problem Slide (Red Theme)</h2>
+    <div class="slide">
+        <div class="top-bar red"></div>
+        <div class="slide-content">
+            <h3 class="slide-title title-red">Challenges Faced</h3>
+            <ul class="bullets">
+                <li>What obstacles prevent us from achieving success?</li>
+                <li>Resource limitations create significant bottlenecks.</li>
+                <li>Technical debt accumulates faster than it can be resolved.</li>
+                <li>Communication gaps between teams cause delays.</li>
+            </ul>
+        </div>
+        <div class="footer">
+            <span>Prepared by: John Doe</span>
+            <span>ID: 12345</span>
+        </div>
+        <div class="page-num">5</div>
+    </div>
+
+    <!-- Impact Slide (Green) -->
+    <h2 style="text-align: center; color: #2C3E50; margin-top: 30px;">Impact Slide (Green Theme)</h2>
+    <div class="slide">
+        <div class="top-bar green"></div>
+        <div class="slide-content">
+            <h3 class="slide-title title-green">Positive Results</h3>
+            <ul class="bullets">
+                <li>How did these changes improve our outcomes?</li>
+                <li>Productivity increased by 40% within three months.</li>
+                <li>Customer satisfaction scores reached an all-time high.</li>
+                <li>Cost reduction of 25% was achieved sustainably.</li>
+            </ul>
+        </div>
+        <div class="footer">
+            <span>Prepared by: John Doe</span>
+            <span>ID: 12345</span>
+        </div>
+        <div class="page-num">8</div>
+    </div>
+
+</body>
+</html>

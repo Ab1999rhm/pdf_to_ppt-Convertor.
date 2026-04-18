@@ -1,0 +1,20 @@
+# Environment Secrets
+.env
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# App Data
+.ppt_cache/
+temp_workspace/
+output.pptx
+images/
+.streamlit/config.toml
+
+# OS Files
+.DS_Store
+Thumbs.db
