@@ -285,9 +285,9 @@ def _build_content_slide(prs, slide_info: dict, slide_num: int,
 
     _add_textbox(
         slide,
-        left=Inches(0.3), top=H - Inches(0.38),
+        left=Inches(0.35), top=H - Inches(0.38),
         width=Inches(7), height=Inches(0.3),
-        text=f"Prepared by: {student_name}",
+        text=f"Presented by: {student_name}",
         font_name=FONT_FOOTER, font_size=Pt(10),
         bold=False, color=WHITE,
         align=PP_ALIGN.LEFT
@@ -297,6 +297,42 @@ def _build_content_slide(prs, slide_info: dict, slide_num: int,
     notes = slide_info.get("speaker_notes", "")
     if notes:
         slide.notes_slide.notes_text_frame.text = notes
+
+
+def _build_thank_you_slide(prs, theme, student_name):
+    """Adds a bold, large-font closing slide."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # Blank
+    W, H = prs.slide_width, prs.slide_height
+    primary = _rgb(theme, "primary")
+
+    # Full background
+    _add_rect(slide, 0, 0, W, H, _rgb(theme, "bg"))
+
+    # Large centered "THANK YOU"
+    _add_textbox(
+        slide,
+        left=0, top=H/2 - Inches(1.2),
+        width=W, height=Inches(2.5),
+        text="THANK YOU",
+        font_name=FONT_TITLE, font_size=Pt(72),
+        bold=True, color=primary,
+        align=PP_ALIGN.CENTER
+    )
+
+    # Branded bottom bar
+    footer_h = Inches(0.45)
+    _add_rect(slide, 0, H - footer_h, W, footer_h, primary)
+
+    # Footer text
+    _add_textbox(
+        slide,
+        left=Inches(0.4), top=H - Inches(0.4),
+        width=Inches(7), height=Inches(0.35),
+        text=f"Presented by: {student_name}",
+        font_name=FONT_FOOTER, font_size=Pt(11),
+        bold=False, color=WHITE,
+        align=PP_ALIGN.LEFT
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +366,9 @@ def generate_pptx(slides_data: list, output_path: str,
 
     for num, slide_info in enumerate(content_slides, start=1):
         _build_content_slide(prs, slide_info, num, student_name, student_id, t)
+
+    # Automatically add the final THANK YOU slide
+    _build_thank_you_slide(prs, t, student_name)
 
     prs.save(output_path)
     print(f"[Generator] Saved PPTX → {output_path}  ({len(content_slides)} content slides)")

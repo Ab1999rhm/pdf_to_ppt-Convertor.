@@ -1,5 +1,6 @@
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*duckduckgo_search.*renamed to.*ddgs.*")
 
 import fitz  # PyMuPDF
 import google.generativeai as genai
@@ -25,9 +26,16 @@ from typing import Optional, Dict, List, Any, Tuple
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 AI_STUDIO_API_KEY = os.getenv("AI_STUDIO_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OLLAMA_BASE_URL = "http://localhost:11434"
 CACHE_DIR = os.path.join(os.getcwd(), ".ppt_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+try:
+    from groq import Groq
+    groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+except ImportError:
+    groq_client = None
 
 # ---------------------------------------------------------------------------
 # API Key / Failover Manager
@@ -68,8 +76,22 @@ class APIKeyManager:
 key_manager = APIKeyManager()
 
 # ---------------------------------------------------------------------------
-# Ollama Helper
+# Ollama / Cloud Fallbacks
 # ---------------------------------------------------------------------------
+def _groq_generate(prompt: str) -> Optional[str]:
+    """Call Groq API as a high-speed cloud fallback."""
+    if not groq_client: return None
+    try:
+        chat_completion = groq_client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.2,
+        )
+        return chat_completion.choices[0].message.content
+    except Exception as e:
+        print(f"[Groq] Error: {e}")
+        return None
+
 def _ollama_generate(model_name: str, prompt: str) -> Optional[str]:
     try:
         r = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10)
@@ -117,9 +139,12 @@ GEMINI_MODELS = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro"]
 
 def generate_with_failover(prompt: str, is_multimodal=None, max_retries=3):
     if not key_manager.current_key:
+        # Check Groq First as it's faster
+        groq_text = _groq_generate(prompt)
+        if groq_text: return _OllamaResponse(groq_text)
+        
         ollama_text = _ollama_generate("llama3", prompt)
-        if ollama_text:
-            return _OllamaResponse(ollama_text)
+        if ollama_text: return _OllamaResponse(ollama_text)
         raise RuntimeError("No AI backends available")
 
     switched_once = False
@@ -140,6 +165,12 @@ def generate_with_failover(prompt: str, is_multimodal=None, max_retries=3):
                     if key_manager.switch_to_backup():
                         switched_once = True
                         break
+                
+                # Try Groq as next best option
+                print("[AI] Gemini quota reached, trying Groq...")
+                groq_text = _groq_generate(prompt)
+                if groq_text:
+                    return _OllamaResponse(groq_text)
                 continue
         time.sleep(2)
     
@@ -149,52 +180,14 @@ def generate_with_failover(prompt: str, is_multimodal=None, max_retries=3):
     raise RuntimeError("All AI backends exhausted")
 
 # ---------------------------------------------------------------------------
-# Cache Helpers
+# PDF Functions
 # ---------------------------------------------------------------------------
-def _cache_key(pdf_path: str, max_slides: int, use_external: bool, strategy: str) -> str:
-    with open(pdf_path, "rb") as f:
-        h = hashlib.md5(f.read()).hexdigest()
-    return f"{h}_{max_slides}_{use_external}_{strategy}"
-
-def get_cached_result(key: str):
-    path = os.path.join(CACHE_DIR, f"{key}.json")
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return None
-
-def save_cached_result(key: str, result: dict):
-    path = os.path.join(CACHE_DIR, f"{key}.json")
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[Cache] Error: {e}")
-
-# ---------------------------------------------------------------------------
-# PDF Utilities
-# ---------------------------------------------------------------------------
-def get_all_pdf_text(pdf_path: str) -> str:
-    try:
-        doc = fitz.open(pdf_path)
-        parts = []
-        for page in doc:
-            text = page.get_text().strip()
-            if text:
-                parts.append(text)
-        doc.close()
-        return "\n\n".join(parts).strip()
-    except Exception as e:
-        print(f"[PDF] Error: {e}")
-        return ""
-
 def extract_first_page_image(pdf_path: str, output_dir: str):
+    """Extracts the first page of the PDF as an image for the cover slide."""
     try:
         doc = fitz.open(pdf_path)
-        pix = doc[0].get_pixmap(matrix=fitz.Matrix(2, 2))
+        page = doc.load_page(0)
+        pix = page.get_pixmap(dpi=150)
         path = os.path.join(output_dir, "cover_page.png")
         pix.save(path)
         doc.close()
@@ -203,7 +196,7 @@ def extract_first_page_image(pdf_path: str, output_dir: str):
         return None
 
 # ---------------------------------------------------------------------------
-# Metadata Extraction
+# Metadata & Note Extraction
 # ---------------------------------------------------------------------------
 def extract_document_metadata(text: str, doc_type: str = "auto"):
     head = text[:3000]
@@ -223,468 +216,171 @@ def extract_document_metadata(text: str, doc_type: str = "auto"):
     
     return name, identifier, title
 
+def generate_speaker_notes(slide_title: str, bullets: list, context: str = "") -> str:
+    """Uses AI to generate a 3-4 sentence presentation script for a slide."""
+    prompt = f"Write 3-4 professional speaker note sentences for: {slide_title}\nBullets: {bullets}\nContext: {context}"
+    try: 
+        return generate_with_failover(prompt).text.strip()
+    except Exception as e: 
+        print(f"[Notes] Error: {e}")
+        return ""
+
 # ---------------------------------------------------------------------------
 # Helper Functions for Formatting Bullets
 # ---------------------------------------------------------------------------
 def clean_text_for_bullet(text: str, max_length: int = 150) -> str:
     """Clean and truncate text for bullet points."""
-    # Remove extra whitespace
-    text = re.sub(r'\s+', ' ', text)
-    text = text.strip()
+    # Remove Roman numerals (i, ii, iii, iv, etc.) at start
+    text = re.sub(r'^[ivxlc]+\.?\s+', '', text, flags=re.IGNORECASE)
+    # Remove Table of Contents dots
+    text = re.sub(r'\.{3,}', '', text)
+    # Remove stray page numbers at end
+    text = re.sub(r'\s+\d+$', '', text)
     
-    # Remove numbering
-    text = re.sub(r'^\d+\.\s*', '', text)
-    text = re.sub(r'^[ivx]+\.\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Remove numbering like 1.1 or 1.
+    text = re.sub(r'^\d+\.?\d*\.?\s*', '', text)
     
-    # Truncate if too long
-    if len(text) > max_length:
-        text = text[:max_length-3] + "..."
-    
+    # Truncate if too long (Optimized for substantial 2-3 line bullets)
+    if len(text) > 300:
+        text = text[:297] + "..."
     return text
 
 def extract_key_bullets_from_text(text: str, max_bullets: int = 5) -> List[str]:
-    """Extract key bullet points from text - no raw text dumps."""
-    # Split into sentences
+    """Extract key bullet points from text."""
     sentences = re.split(r'(?<=[.!?])\s+', text)
-    
     bullets = []
     for sent in sentences:
         sent = sent.strip()
-        # Filter for meaningful sentences
-        if len(sent) > 25 and len(sent) < 200 and not sent.isdigit():
-            cleaned = clean_text_for_bullet(sent, 150)
-            if cleaned and len(cleaned) > 10:
-                bullets.append(cleaned)
+        # SCRUB: Aggressively remove ID numbers or institutional headers
+        sent = re.sub(r'(?i)(?:ID No|DIRE DAWA UNIVERSITY|SCHOOL OF|DEPARTMENT OF).*', '', sent).strip()
         
-        if len(bullets) >= max_bullets:
-            break
+        if len(sent) > 25 and len(sent) < 250 and not sent.isdigit():
+            cleaned = clean_text_for_bullet(sent, 180)
+            if cleaned and len(cleaned) > 15:
+                bullets.append(cleaned)
+        if len(bullets) >= max_bullets: break
     
-    # If no bullets found, try to extract phrases
     if not bullets:
-        # Look for key phrases separated by commas or semicolons
         phrases = re.split(r'[;,]\s+', text)
         for phrase in phrases[:max_bullets]:
             phrase = phrase.strip()
             if len(phrase) > 20 and len(phrase) < 150:
                 bullets.append(clean_text_for_bullet(phrase))
-    
     return bullets
 
-def extract_cover_info(text: str) -> dict:
-    """Extract cover page information for slide 1."""
-    info = {
-        "university": "",
-        "school": "",
-        "department": "",
-        "title": "",
-        "name": "",
-        "id": "",
-        "date": ""
-    }
-    
-    # Extract university/institution
-    uni_match = re.search(r'(DIRE DAWA UNIVERSITY[^\n]*)', text, re.IGNORECASE)
-    if uni_match:
-        info["university"] = uni_match.group(1).strip()
-    
-    # Extract school
-    school_match = re.search(r'(SCHOOL OF[^\n]*)', text, re.IGNORECASE)
-    if school_match:
-        info["school"] = school_match.group(1).strip()
-    
-    # Extract department
-    dept_match = re.search(r'(DEPARTMENT OF[^\n]*)', text, re.IGNORECASE)
-    if dept_match:
-        info["department"] = dept_match.group(1).strip()
-    
-    # Extract title
-    title_match = re.search(r'Title[:\s]+([^\n]+)', text, re.IGNORECASE)
-    if title_match:
-        info["title"] = title_match.group(1).strip()
-    
-    # Extract name
-    name_match = re.search(r'NAME[:\s]+([A-Za-z\s]+?)(?:\n|ID)', text, re.IGNORECASE)
-    if name_match:
-        info["name"] = name_match.group(1).strip()
-    
-    # Extract ID
-    id_match = re.search(r'ID No[:\s]+(\d+)', text, re.IGNORECASE)
-    if id_match:
-        info["id"] = id_match.group(1).strip()
-    
-    # Extract date
-    date_match = re.search(r'Submit Date[:\s]+([^\n]+)', text, re.IGNORECASE)
-    if date_match:
-        info["date"] = date_match.group(1).strip()
-    
-    return info
-
-def generate_cover_slide(text: str) -> dict:
-    """Generate properly formatted cover slide."""
-    info = extract_cover_info(text)
-    
-    bullets = []
-    if info["university"]:
-        bullets.append(info["university"])
-    if info["school"]:
-        bullets.append(info["school"])
-    if info["department"]:
-        bullets.append(info["department"])
-    if info["title"]:
-        bullets.append(f"Title: {info['title']}")
-    if info["name"]:
-        bullets.append(f"Presented by: {info['name']}")
-    if info["id"]:
-        bullets.append(f"ID: {info['id']}")
-    if info["date"]:
-        bullets.append(f"Date: {info['date']}")
-    
-    if not bullets:
-        bullets = ["Academic Presentation"]
-    
-    return {
-        "title": "Cover Page",
-        "bullets": bullets[:6],
-        "layout_type": "cover",
-        "art_prompt": "university academic presentation cover"
-    }
-
 # ---------------------------------------------------------------------------
-# Strategy 1: AI-Synthesized (Working correctly)
+# Extraction Strategies
 # ---------------------------------------------------------------------------
-def generate_ai_synthesized_slides(full_text: str, max_slides: int, progress_callback=None) -> dict:
-    """Generate slides using AI - this is working correctly."""
-    print("[AI-Synthesized] Generating slides with AI...")
+def generate_ai_synthesized_slides(full_text: str, max_slides: int, progress_callback=None):
+    """Deep synthesis using AI, with chunked generation to avoid truncation."""
+    all_slides = []
+    batch_size = 10  # Process in batches of 10 slides to avoid token limits
     
-    # Clean the text
-    clean_text = re.sub(r'DIRE DAWA UNIVERSITY.*?Submit Date:.*?\d{4}', '', full_text, flags=re.DOTALL|re.IGNORECASE)
-    clean_text = re.sub(r'Abstract\s+.*?(?=\n\n|\d+\.)', '', clean_text, flags=re.DOTALL|re.IGNORECASE)
-    
-    # Get metadata
-    name, sid, title = extract_document_metadata(full_text)
-    
-    # Create prompt for AI
-    prompt = f"""Create exactly {max_slides} professional presentation slides from this academic text.
-
-CRITICAL RULES:
-1. Slide 1 must be a COVER PAGE with title, author, institution
-2. Each content slide must have 3-5 bullet points (max 150 chars each)
-3. NO raw text dumps - extract key insights only
-4. Focus on: WHAT, WHY, and HOW
-
-Output JSON format:
-{{
-  "slides": [
-    {{"title": "Cover Page", "bullets": ["Institution", "Title", "Author", "Date"]}},
-    {{"title": "Section Title", "bullets": ["Key point 1", "Key point 2", "Key point 3"]}}
-  ]
-}}
-
-Text:
-{clean_text[:20000]}
-
-Return ONLY valid JSON."""
-    
-    try:
-        response = generate_with_failover(prompt)
-        raw = response.text
+    for start in range(0, max_slides, batch_size):
+        remaining = max_slides - start
+        current_batch = min(batch_size, remaining)
         
-        # Extract JSON
-        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            slides = data.get("slides", [])
+        # Guide the AI to continue where it left off
+        offset_context = f"This is part {start//batch_size + 1} of the presentation. Focus on slides {start+1} to {start+current_batch}."
+        
+        prompt = f"""
+        Analyze this document and create technical slides {start+1} to {start+current_batch} (Total {current_batch} slides).
+        {offset_context}
+        
+        For each slide, provide a Title and exactly 5 SUBSTANTIAL TECHNICAL bullet points.
+        
+        STRICT WRITING RULES:
+        - Every bullet must be a clear, informative statement of 2 to 3 lines.
+        - Avoid fragments like "Financial loss" or "Personal stress".
+        - Focus on the technical 'How' and 'Why' (e.g., "Attackers utilize generative AI to automate the creation of hyper-personalized lures, which allows them to bypass traditional pattern-based filters that only detect simple spelling errors.")
+        - Ensure each point provides enough detail to be understandable without reading the original PDF.
+        
+        JSON Output Format:
+        {{
+          "slides": [
+            {{"title": "Slide Title", "bullets": ["detailed substantial sentence 1", "detailed substantial sentence 2", "detailed substantial sentence 3", "detailed substantial sentence 4", "detailed substantial sentence 5"]}}
+          ]
+        }}
+        Document Content Fragment: {full_text[start*4000 : (start*4000) + 20000]}
+        """
+        try:
+            response = generate_with_failover(prompt)
+            raw_text = response.text
             
-            # Validate slides
-            validated = []
-            for slide in slides:
-                if isinstance(slide, dict):
-                    title = slide.get("title", "Slide")[:60]
-                    bullets = slide.get("bullets", [])
-                    # Clean bullets
-                    clean_bullets = [clean_text_for_bullet(b, 150) for b in bullets[:5] if b and len(b) > 10]
-                    if clean_bullets:
-                        validated.append({
-                            "title": title,
-                            "bullets": clean_bullets,
-                            "art_prompt": title[:50]
-                        })
+            # Robust JSON extraction
+            json_match = re.search(r'(\{.*\})', raw_text, re.DOTALL)
+            if json_match:
+                clean_json = json_match.group(1).strip()
+                # Fix minor truncation/format errors
+                clean_json = re.sub(r'\}\s*\{', '},{', clean_json)
+                clean_json = re.sub(r',\s*\]|,\s*\}', ']', clean_json)
+                
+                try:
+                    data = json.loads(clean_json)
+                    batch_slides = data.get("slides", [])
+                    all_slides.extend(batch_slides)
+                except:
+                    # Fallback to ast for partial repair
+                    import ast
+                    try:
+                        data = ast.literal_eval(clean_json)
+                        all_slides.extend(data.get("slides", []))
+                    except: pass
             
-            if validated:
-                print(f"[AI-Synthesized] Generated {len(validated)} slides")
-                return {
-                    "slides": validated[:max_slides],
-                    "student_name": name,
-                    "student_id": sid,
-                    "academic_title": title
-                }
-    except Exception as e:
-        print(f"[AI-Synthesized] Error: {e}")
-    
-    # Fallback
-    return generate_preserve_structure_slides(full_text, max_slides, progress_callback)
+            if progress_callback:
+                progress_callback(min(start + batch_size, max_slides), max_slides)
+                
+        except Exception as e:
+            print(f"[AI] Batch Error: {e}")
+            
+    return {"slides": all_slides}
 
-# ---------------------------------------------------------------------------
-# Strategy 2: Preserve PDF Structure (FIXED - No raw text dumps)
-# ---------------------------------------------------------------------------
-def extract_main_sections(text: str) -> List[Dict]:
-    """Extract main sections only (no subsections like 2.1, 3.2)."""
-    # Remove cover page content
-    text = re.sub(r'DIRE DAWA UNIVERSITY.*?Submit Date:.*?\d{4}', '', text, flags=re.DOTALL|re.IGNORECASE)
-    text = re.sub(r'Abstract\s+.*?(?=\n\n|\d+\.\s+[A-Z]|Introduction)', '', text, flags=re.DOTALL|re.IGNORECASE)
-    text = re.sub(r'Table of Contents.*?(?=\n\n|\d+\.\s+[A-Z])', '', text, flags=re.DOTALL|re.IGNORECASE)
+def generate_preserve_structure_slides(full_text: str, max_slides: int, progress_callback=None):
+    """Maintains original document flow by extracting sections and their main points."""
+    sections = re.split(r'\n(?=\d+\.\s+[A-Z])', full_text)
+    if len(sections) < 3:
+        sections = re.split(r'\n(?=[A-Z][A-Z\s]{5,}\n)', full_text)
     
-    # Define main section headers (not subsections)
-    main_headers = [
-        'introduction', 'background', 'literature review', 'related work',
-        'methodology', 'methods', 'implementation', 'system architecture',
-        'results', 'findings', 'discussion', 'analysis', 'evaluation',
-        'conclusion', 'future work', 'recommendations', 'references'
-    ]
-    
-    lines = text.split('\n')
-    sections = []
-    current_title = "Introduction"
-    current_content = []
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        line_lower = line.lower()
-        is_main_header = False
-        
-        # Skip subsections (patterns like 2.1, 3.2, 1.1.1)
-        if re.match(r'^\d+\.\d+', line):
-            current_content.append(line)
-            continue
-        
-        # Check if this is a main section header
-        for header in main_headers:
-            if line_lower == header or line_lower.startswith(header + ' ') or line_lower.startswith(header + ':'):
-                if len(line) < 60:
-                    is_main_header = True
-                    break
-        
-        # Check for numbered main sections (1. Introduction, 2. Background)
-        if not is_main_header and re.match(r'^\d+\.\s+[A-Za-z]', line) and len(line) < 80:
-            # Check it's not a subsection
-            if not re.match(r'^\d+\.\d+', line):
-                is_main_header = True
-        
-        # Check for ALL CAPS headers
-        if not is_main_header and line.isupper() and 5 < len(line) < 50:
-            if not re.match(r'^\d+\.\d+', line):
-                is_main_header = True
-        
-        if is_main_header and current_content:
-            if current_content:
-                sections.append({
-                    "title": current_title,
-                    "content": ' '.join(current_content)
-                })
-            current_title = line[:50]
-            current_content = []
-        else:
-            current_content.append(line)
-    
-    # Add last section
-    if current_content:
-        sections.append({
-            "title": current_title,
-            "content": ' '.join(current_content)
-        })
-    
-    return sections
-
-def generate_preserve_structure_slides(full_text: str, max_slides: int, progress_callback=None) -> dict:
-    """Generate slides preserving PDF structure - FIXED: No raw text dumps."""
-    print("[Preserve Structure] Extracting sections...")
-    
-    # Get metadata
-    name, sid, title = extract_document_metadata(full_text)
-    
-    # Create cover slide
-    slides = [generate_cover_slide(full_text)]
-    
-    if progress_callback:
-        progress_callback(1, max_slides)
-    
-    # Extract main sections
-    sections = extract_main_sections(full_text)
-    
-    if not sections:
-        print("[Preserve Structure] No sections found, using fallback")
-        # Create fallback sections from paragraphs
-        paragraphs = full_text.split('\n\n')
-        for i, para in enumerate(paragraphs[:max_slides-1]):
-            if len(para.strip()) > 100:
-                sections.append({
-                    "title": f"Section {i+1}",
-                    "content": para.strip()
-                })
-    
-    print(f"[Preserve Structure] Found {len(sections)} sections")
-    
-    # Create content slides from sections
-    for section in sections:
-        if len(slides) >= max_slides:
-            break
-        
-        content = section["content"]
-        title = section["title"]
-        
-        # Extract key bullet points (not raw text)
-        bullets = extract_key_bullets_from_text(content, max_bullets=5)
-        
-        # If no bullets extracted, create a summary bullet
-        if not bullets:
-            # Take first 150 chars as a summary
-            summary = clean_text_for_bullet(content[:150], 150)
-            if summary:
-                bullets = [summary]
-        
+    slides = []
+    for i, section in enumerate(sections[:max_slides]):
+        lines = section.strip().split('\n')
+        if not lines: continue
+        title = lines[0].strip()[:80]
+        body = " ".join(lines[1:])
+        bullets = extract_key_bullets_from_text(body, 5)
+        # Filter for the most descriptive bullets
+        bullets = [b for b in bullets if len(b) > 40]
         if bullets:
-            slides.append({
-                "title": title[:60],
-                "bullets": bullets[:5],  # Max 5 bullets
-                "layout_type": "standard",
-                "art_prompt": title[:50]
-            })
-            
-            if progress_callback:
-                progress_callback(len(slides), max_slides)
+            slides.append({"title": title, "bullets": bullets[:5]})
     
-    # Trim to max_slides
-    slides = slides[:max_slides]
-    
-    print(f"[Preserve Structure] Generated {len(slides)} slides")
-    
-    return {
-        "slides": slides,
-        "student_name": name,
-        "student_id": sid,
-        "academic_title": title
-    }
+    return {"slides": slides}
 
-# ---------------------------------------------------------------------------
-# Strategy 3: Extract TOC First
-# ---------------------------------------------------------------------------
-def generate_toc_based_slides(full_text: str, max_slides: int, progress_callback=None) -> dict:
-    """Generate slides by extracting TOC first."""
-    print("[Extract TOC] Finding table of contents...")
-    
-    # Get metadata
-    name, sid, title = extract_document_metadata(full_text)
-    
-    # Create cover slide
-    slides = [generate_cover_slide(full_text)]
-    
-    if progress_callback:
-        progress_callback(1, max_slides)
-    
-    # Extract sections (this serves as TOC)
-    sections = extract_main_sections(full_text)
-    
-    if not sections:
-        print("[Extract TOC] No sections found, using preserve structure fallback")
-        return generate_preserve_structure_slides(full_text, max_slides, progress_callback)
-    
-    print(f"[Extract TOC] Found {len(sections)} sections")
-    
-    # Create detailed slides for each TOC entry
-    remaining_slides = max_slides - 1
-    slides_per_section = max(1, remaining_slides // len(sections))
-    
-    for section in sections:
-        if len(slides) >= max_slides:
-            break
-        
-        content = section["content"]
-        base_title = section["title"]
-        
-        # Extract multiple bullet points from this section
-        all_bullets = extract_key_bullets_from_text(content, max_bullets=slides_per_section * 4)
-        
-        # Distribute bullets across multiple slides if needed
-        for i in range(slides_per_section):
-            if len(slides) >= max_slides:
-                break
-            
-            start_idx = i * 4
-            end_idx = start_idx + 4
-            slide_bullets = all_bullets[start_idx:end_idx]
-            
-            if not slide_bullets:
-                break
-            
-            # Create slide title
-            if slides_per_section > 1 and i > 0:
-                slide_title = f"{base_title} (Part {i+1})"
-            else:
-                slide_title = base_title
-            
-            slides.append({
-                "title": slide_title[:60],
-                "bullets": slide_bullets[:5],
-                "layout_type": "standard",
-                "art_prompt": base_title[:50]
-            })
-            
-            if progress_callback:
-                progress_callback(len(slides), max_slides)
-    
-    # Trim to max_slides
-    slides = slides[:max_slides]
-    
-    print(f"[Extract TOC] Generated {len(slides)} slides")
-    
-    return {
-        "slides": slides,
-        "student_name": name,
-        "student_id": sid,
-        "academic_title": title
-    }
+def extract_pdf_data(pdf_path: str, max_slides: int = 15, strategy: str = "ai_synthesized", use_external: bool = False, progress_callback=None, doc_type: str = "auto"):
+    """Main entry point for extracting and structuring PDF data."""
+    try:
+        doc = fitz.open(pdf_path)
+        full_text = ""
+        for page in doc:
+            full_text += page.get_text()
+        doc.close()
+    except Exception as e:
+        print(f"[PDF] Error: {e}")
+        return {"slides": []}
 
-# ---------------------------------------------------------------------------
-# Main Public Function
-# ---------------------------------------------------------------------------
-def extract_pdf_data(pdf_path: str, max_slides: int = 15, use_external: bool = False,
-                     progress_callback=None, use_cache: bool = True,
-                     strategy: str = "ai_synthesized", doc_type: str = "auto") -> dict:
-    """Main function to extract and process PDF data into slides."""
-    
-    if not os.path.exists(pdf_path):
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
-    
-    if use_cache:
-        key = _cache_key(pdf_path, max_slides, use_external, strategy)
-        cached = get_cached_result(key)
-        if cached:
-            print("[Cache] Using cached result")
-            return cached
-    
-    print(f"[PDF] Processing: {pdf_path}")
-    full_text = get_all_pdf_text(pdf_path)
+    student_name, student_id, academic_title = extract_document_metadata(full_text)
     
     if not full_text:
-        print("[Error] No text extracted")
         return {"slides": [], "student_name": "Author", "student_id": "", "academic_title": ""}
     
-    # Choose strategy
     if strategy == "ai_synthesized":
         result = generate_ai_synthesized_slides(full_text, max_slides, progress_callback)
-    elif strategy == "preserve_structure":
-        result = generate_preserve_structure_slides(full_text, max_slides, progress_callback)
-    elif strategy == "extract_toc":
-        result = generate_toc_based_slides(full_text, max_slides, progress_callback)
     else:
         result = generate_preserve_structure_slides(full_text, max_slides, progress_callback)
-    
-    if use_cache and result.get("slides"):
-        save_cached_result(key, result)
-    
+        
+    result["student_name"] = student_name
+    result["student_id"] = student_id
+    result["academic_title"] = academic_title
     return result
 
 # ---------------------------------------------------------------------------
@@ -703,38 +399,20 @@ def download_image(url: str, save_path: str) -> bool:
     return False
 
 def fetch_image_for_topic(topic: str, save_dir: str, filename: str):
-    time.sleep(random.uniform(0.5, 1.5))
+    if len(topic) < 10 or "...." in topic: return None
+    time.sleep(random.uniform(5.0, 8.0))
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.images(keywords=topic, max_results=3))
-            if results:
-                url = results[0].get("image", "")
-                if url:
-                    path = os.path.join(save_dir, f"{filename}.jpg")
-                    if download_image(url, path):
-                        return path
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with DDGS() as ddgs:
+                results = list(ddgs.images(keywords=topic, max_results=3))
+                if results:
+                    url = results[0].get("image", "")
+                    if url and download_image(url, os.path.join(save_dir, f"{filename}.jpg")):
+                        return os.path.join(save_dir, f"{filename}.jpg")
     except Exception as e:
-        print(f"[Image] Error: {e}")
+        if "403" in str(e): print(f"[Image] Rate-limited for: {topic[:20]}")
     return None
 
-# ---------------------------------------------------------------------------
-# Test Function
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("Testing PDF to Slides Converter...")
-    
-    test_pdf = "Abraham_Fikadu_seminar_software_Assignment.pdf"
-    if os.path.exists(test_pdf):
-        # Test preserve structure strategy
-        print("\n=== Testing Preserve Structure Strategy ===")
-        result = extract_pdf_data(test_pdf, max_slides=10, strategy="preserve_structure")
-        
-        print(f"\n✅ Generated {len(result['slides'])} slides")
-        
-        # Preview slides
-        for i, slide in enumerate(result['slides'][:5], 1):
-            print(f"\n📊 Slide {i}: {slide['title']}")
-            for bullet in slide['bullets'][:3]:
-                print(f"   • {bullet[:100]}")
-    else:
-        print(f"Test PDF not found: {test_pdf}")
+    print("PDF to Slides Pipeline Ready.")
